@@ -1,7 +1,0 @@
-{
-  "functions": {
-    "api/critique.js": {
-      "maxDuration": 30
-    }
-  }
-}

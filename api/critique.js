@@ -179,7 +179,6 @@ export default async function handler(req, res) {
             "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120 Safari/537.36 COMPASS/1.0",
           Accept: "text/html,application/xhtml+xml",
         },
-        // follow redirects by default
       });
 
       const { title: t, body: b } = extractArticle(htmlResp.data, targetUrl);
@@ -206,7 +205,9 @@ export default async function handler(req, res) {
       return res.status(500).json({ ok: false, error: "GEMINI_API_KEY が設定されていません。" });
     }
     const genAI = new GoogleGenerativeAI(apiKey);
-    const model = genAI.getGenerativeModel({ model: "gemini-1.5-pro" });
+
+    // ✅ 修正版：最新の正しいモデル指定
+    const model = genAI.getGenerativeModel({ model: "gemini-1.5-pro-latest" });
 
     const prompt = buildPrompt({ title, body: content });
 

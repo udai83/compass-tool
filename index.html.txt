@@ -1,0 +1,112 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>AI添削ツール「COMPASS」</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+        body { font-family: 'Inter', 'Noto Sans JP', sans-serif; }
+        .feedback-tag { display: inline-block; background-color: #e0f2fe; color: #0c4a6e; padding: 2px 8px; border-radius: 9999px; font-size: 0.875rem; margin-right: 8px; }
+        .feedback-item { padding: 1rem; border: 1px solid #e5e7eb; border-radius: 0.75rem; background-color: #f9fafb; }
+        #loading-overlay { position: fixed; top: 0; left: 0; width: 100%; height: 100%; background-color: rgba(0, 0, 0, 0.6); display: flex; justify-content: center; align-items: center; z-index: 9999; }
+        .loader { border: 8px solid #f3f3f3; border-top: 8px solid #3b82f6; border-radius: 50%; width: 60px; height: 60px; animation: spin 1.5s linear infinite; }
+        @keyframes spin { 0% { transform: rotate(0deg); } 100% { transform: rotate(360deg); } }
+    </style>
+</head>
+<body class="bg-gray-100 text-gray-800">
+
+    <div id="loading-overlay" class="hidden"><div class="loader"></div></div>
+
+    <div id="app-screen" class="min-h-screen p-4 sm:p-6 md:p-8">
+        <div class="max-w-4xl mx-auto bg-white rounded-2xl shadow-lg p-6 sm:p-8">
+            <header class="mb-8 text-center">
+                <h1 class="text-3xl sm:text-4xl font-bold text-gray-800">AI添削ツール「COMPASS」</h1>
+                <p class="text-gray-500 mt-2">LLMO時代に最適化されたコンテンツ品質向上をサポートします。</p>
+            </header>
+            
+            <div>
+                <div class="space-y-4">
+                    <div>
+                        <label for="title-input" class="block text-sm font-medium text-gray-700 mb-1">タイトル</label>
+                        <input type="text" id="title-input" class="w-full p-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500" placeholder="記事のタイトルを入力">
+                    </div>
+                    <div>
+                        <label for="body-input" class="block text-sm font-medium text-gray-700 mb-1">本文</label>
+                        <textarea id="body-input" rows="12" class="w-full p-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500" placeholder="記事の本文を貼り付け"></textarea>
+                    </div>
+                </div>
+            </div>
+
+            <div class="mt-8 text-center">
+                <button id="critique-button" class="w-full sm:w-auto bg-blue-600 text-white font-bold py-3 px-12 rounded-lg hover:bg-blue-700 transition-colors text-lg shadow-md">
+                    添削を開始する
+                </button>
+            </div>
+
+            <div id="result-area" class="mt-10 hidden">
+                <h2 class="text-2xl font-bold mb-6 border-l-4 border-blue-600 pl-4">フィードバック結果</h2>
+                <div id="feedback-container" class="space-y-6"></div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        const critiqueButton = document.getElementById('critique-button');
+        const loadingOverlay = document.getElementById('loading-overlay');
+        const resultArea = document.getElementById('result-area');
+        const feedbackContainer = document.getElementById('feedback-container');
+
+        critiqueButton.addEventListener('click', async () => {
+            const title = document.getElementById('title-input').value.trim();
+            const body = document.getElementById('body-input').value.trim();
+
+            if (!title || !body) {
+                alert('タイトルと本文の両方を入力してください。');
+                return;
+            }
+
+            loadingOverlay.classList.remove('hidden');
+            resultArea.classList.add('hidden');
+
+            try {
+                // ここが重要：発電所(/api/critique)を呼び出します
+                const response = await fetch('/api/critique', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ title, body })
+                });
+
+                if (!response.ok) {
+                    const errorData = await response.json();
+                    throw new Error(errorData.error || `API error: ${response.statusText}`);
+                }
+
+                const data = await response.json();
+                displayFeedback(data);
+
+            } catch (error) {
+                console.error('Fetch Error:', error);
+                alert(`エラーが発生しました：${error.message}`);
+            } finally {
+                loadingOverlay.classList.add('hidden');
+                resultArea.classList.remove('hidden');
+                window.scrollTo({ top: resultArea.offsetTop - 20, behavior: 'smooth' });
+            }
+        });
+
+        function displayFeedback(data) {
+            feedbackContainer.innerHTML = '';
+            const overallHtml = `<div class="feedback-item border-l-4 border-blue-500 bg-blue-50"><h3 class="text-lg font-bold mb-2 text-blue-800">総合評価: ${'★'.repeat(data.overall_score)}${'☆'.repeat(10 - data.overall_score)} (${data.overall_score}/10)</h3><p class="text-blue-700">${data.overall_comment}</p></div>`;
+            feedbackContainer.insertAdjacentHTML('beforeend', overallHtml);
+            const titleHtml = `<div class="feedback-item border-l-4 border-yellow-500 bg-yellow-50"><h3 class="text-lg font-bold mb-2 text-yellow-800">タイトル評価: ${'★'.repeat(data.title_feedback.score)}${'☆'.repeat(10 - data.title_feedback.score)} (${data.title_feedback.score}/10)</h3><p class="text-yellow-700">${data.title_feedback.comment}</p></div>`;
+            feedbackContainer.insertAdjacentHTML('beforeend', titleHtml);
+            data.feedback_points.forEach(item => {
+                const itemHtml = `<div class="feedback-item"><h3 class="font-bold mb-2"><span class="feedback-tag">${item.point}</span></h3><p>${item.suggestion.replace(/\n/g, '<br>')}</p></div>`;
+                feedbackContainer.insertAdjacentHTML('beforeend', itemHtml);
+            });
+        }
+    </script>
+</body>
+</html>
+

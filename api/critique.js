@@ -5,17 +5,23 @@ import { GoogleGenerativeAI } from "@google/generative-ai";
 
 // このファイル全体が、VercelによってAPIとして公開されます
 export default async function handler(req, res) {
+    console.log("★★ STEP 1: 発電所の処理が開始されました。★★");
+
     // POST以外のリクエストは受け付けません
     if (req.method !== 'POST') {
+        console.error("エラー: POST以外のリクエストです。");
         return res.status(405).json({ error: 'Method Not Allowed' });
     }
 
     try {
+        console.log("★★ STEP 2: 魔法の呪文（APIキー）を取り出します。 ★★");
         // Vercelに設定した「魔法の呪文」を取り出します
         const API_KEY = process.env.GEMINI_API_KEY;
         if (!API_KEY) {
+            console.error("重大なエラー: APIキーがVercelの環境変数に設定されていません。");
             throw new Error("APIキーがVercelの環境変数に設定されていません。");
         }
+        console.log("★★ STEP 3: 魔法の呪文を無事に取り出しました。AIと通信準備をします。 ★★");
         
         // AIと通信するための準備をします
         const genAI = new GoogleGenerativeAI(API_KEY);
@@ -25,8 +31,10 @@ export default async function handler(req, res) {
         // お客様が入力したタイトルと本文を取り出します
         const { title, body } = req.body;
         if (!title || !body) {
+            console.error("エラー: タイトルまたは本文が空です。");
             return res.status(400).json({ error: 'タイトルと本文の両方が必要です。' });
         }
+        console.log("★★ STEP 4: お客様からの依頼を受け取りました。これからAIに指示を出します。 ★★");
 
         // AIに渡す、最強の指示書（プロンプト）です
         const prompt = `
@@ -90,6 +98,8 @@ export default async function handler(req, res) {
         const result = await model.generateContent(prompt);
         const response = result.response;
         
+        console.log("★★ STEP 5: AIから無事に返事がありました。お客様に結果をお届けします。 ★★");
+
         // AIからの返事を、お客様の画面に送れる形に整えます
         const responseData = JSON.parse(response.text());
         

@@ -1,8 +1,8 @@
 // api/critique.js
-// Vercel Serverless Function (Node.js/ESM)
-// - mode=text:  タイトル＋本文を評価
-// - mode=url :  axios+cheerioで抽出したh1/本文を評価
-// Google Gemini (Generative Language API) を REST で直接呼び出す。
+// Vercel Serverless Function (Node.js/ESM; type: module)
+// - mode=text : タイトル＋本文を評価
+// - mode=url  : axios+cheerioで抽出したh1/本文を評価
+// Google Gemini (Generative Language API) を REST(v1) で直接呼び出す。
 // APIキーは Vercel 環境変数 GEMINI_API_KEY を使用。
 
 import axios from "axios";
@@ -133,10 +133,10 @@ function extractJsonFromText(text) {
   return JSON.parse(match[0]);
 }
 
-// ---------------- Gemini REST ----------------
-// 1) ListModels で、このAPIキーが使えるモデルを取得
+// ---------------- Gemini REST (v1) ----------------
+// 1) ListModels で、このAPIキーで使えるモデル一覧を取得
 async function listModels(apiKey) {
-  const url = `https://generativelanguage.googleapis.com/v1beta/models?key=${encodeURIComponent(
+  const url = `https://generativelanguage.googleapis.com/v1/models?key=${encodeURIComponent(
     apiKey
   )}`;
   const resp = await axios.get(url, { timeout: 15000 });
@@ -145,49 +145,46 @@ async function listModels(apiKey) {
 
 // 2) generateContent をサポートするモデルの中から優先順で選択
 function pickBestModel(models) {
-  // supportedGenerationMethods に "generateContent" を含むものだけ
+  // supportedGenerationMethods に "generateContent" を含むもの
   const usable = models.filter((m) =>
     (m.supportedGenerationMethods || []).includes("generateContent")
   );
 
-  // 優先順。存在する最初のものを使う
+  // 優先順。一致したら「APIが返したフル名（models/xxx）」をそのまま返す
   const preferred = [
-    "gemini-1.5-pro-002",
-    "gemini-1.5-pro",
-    "gemini-1.5-flash-002",
-    "gemini-1.5-flash",
-    "gemini-1.0-pro",
-    "gemini-pro"
+    "models/gemini-1.5-pro-002",
+    "models/gemini-1.5-pro",
+    "models/gemini-1.5-flash-002",
+    "models/gemini-1.5-flash",
+    "models/gemini-1.0-pro",
+    "models/gemini-pro"
   ];
 
-  for (const name of preferred) {
-    const found = usable.find((m) => m.name === name || m.name?.endsWith(`/models/${name}`));
-    if (found) return found.name.includes("/models/") ? found.name.split("/models/")[1] : found.name;
+  for (const full of preferred) {
+    const found = usable.find((m) => m.name === full || m.name?.endsWith(full));
+    if (found) return found.name; // そのまま返す（"models/xxx"）
   }
 
-  // 何もマッチしなければ、usableの先頭を返す（最後の保険）
-  if (usable.length > 0) {
-    const n = usable[0].name;
-    return n.includes("/models/") ? n.split("/models/")[1] : n;
-  }
+  // 何もマッチしなければ usable の先頭をフル名で返す
+  if (usable.length > 0) return usable[0].name;
 
   return null;
 }
 
-// 3) 選択したモデルで generateContent 実行（REST）
-async function generateContentREST(apiKey, model, prompt) {
-  const url = `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(
-    model
+// 3) 選択したモデル（"models/xxx" のフル名）で generateContent 実行
+async function generateContentREST(apiKey, modelFullName, prompt) {
+  // modelFullName は "models/xxx" を期待
+  const url = `https://generativelanguage.googleapis.com/v1/${encodeURIComponent(
+    modelFullName
   )}:generateContent?key=${encodeURIComponent(apiKey)}`;
+
   const payload = {
     contents: [{ role: "user", parts: [{ text: prompt }] }],
-    generationConfig: {
-      temperature: 0.4,
-      maxOutputTokens: 1024
-    }
+    generationConfig: { temperature: 0.4, maxOutputTokens: 1024 }
   };
+
   const resp = await axios.post(url, payload, { timeout: 30000 });
-  // レスポンスからテキスト抽出
+
   const txt =
     resp.data?.candidates?.[0]?.content?.parts
       ?.map((p) => p.text || "")
@@ -248,19 +245,19 @@ export default async function handler(req, res) {
     const apiKey = process.env.GEMINI_API_KEY;
     if (!apiKey) return res.status(500).json({ ok: false, error: "GEMINI_API_KEY が設定されていません。" });
 
-    // まず、このキーで使えるモデル一覧を取得し、generateContent対応モデルを自動選択
+    // このキーで使えるモデル一覧 → generateContent対応の最適を自動選択（フル名 "models/xxx" で取得）
     const models = await listModels(apiKey);
-    const chosen = pickBestModel(models);
-    if (!chosen) {
+    const chosenFull = pickBestModel(models);
+    if (!chosenFull) {
       return res.status(500).json({
         ok: false,
         error:
-          "このAPIキーで利用可能な generateContent 対応モデルが見つかりませんでした。AI Studioのキーか、Generative Language APIが有効化されたGoogle CloudのAPIキーを使用してください。"
+          "このAPIキーで利用可能な generateContent 対応モデルが見つかりませんでした。AI Studioのキー、またはGenerative Language APIを有効化したGCPプロジェクトのAPIキーをご利用ください。"
       });
     }
 
     const prompt = buildPrompt({ title, body: content });
-    const text = await generateContentREST(apiKey, chosen, prompt);
+    const text = await generateContentREST(apiKey, chosenFull, prompt);
     const critique = extractJsonFromText(text);
 
     // 軽い整形
@@ -273,7 +270,7 @@ export default async function handler(req, res) {
       if (isNaN(critique.overall_score)) critique.overall_score = null;
     } catch {}
 
-    return res.status(200).json({ ok: true, critique, source: sourceMeta, used_model: chosen });
+    return res.status(200).json({ ok: true, critique, source: sourceMeta, used_model: chosenFull });
   } catch (err) {
     console.error("[COMPASS] Error:", err?.response?.data || err);
     const message =

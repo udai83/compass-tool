@@ -1,40 +1,59 @@
 // Vercel上で動作する、AIとの通信を専門に行うプログラム（発電所）です。
+// Vercelの最新基準に対応した書き方です。
 
 // 必要な部品をインポートします
 import { GoogleGenerativeAI } from "@google/generative-ai";
+import axios from 'axios';
+import cheerio from 'cheerio';
+
+// Vercelが、この建築には少し時間がかかることを理解するための設定
+export const maxDuration = 30;
 
 // このファイル全体が、VercelによってAPIとして公開されます
 export default async function handler(req, res) {
-    console.log("★★ STEP 1: 発電所の処理が開始されました。★★");
-
     // POST以外のリクエストは受け付けません
     if (req.method !== 'POST') {
-        console.error("エラー: POST以外のリクエストです。");
         return res.status(405).json({ error: 'Method Not Allowed' });
     }
 
     try {
-        console.log("★★ STEP 2: 魔法の呪文（APIキー）を取り出します。 ★★");
         // Vercelに設定した「魔法の呪文」を取り出します
         const API_KEY = process.env.GEMINI_API_KEY;
         if (!API_KEY) {
-            console.error("重大なエラー: APIキーがVercelの環境変数に設定されていません。");
+            console.error("APIキーがVercelの環境変数に設定されていません。");
             throw new Error("APIキーがVercelの環境変数に設定されていません。");
         }
-        console.log("★★ STEP 3: 魔法の呪文を無事に取り出しました。AIと通信準備をします。 ★★");
         
         // AIと通信するための準備をします
         const genAI = new GoogleGenerativeAI(API_KEY);
-        // 必ずJSON形式で返事をくれるように、AIにお願いします
         const model = genAI.getGenerativeModel({ model: "gemini-1.5-flash-latest", generationConfig: { responseMimeType: "application/json" }});
 
-        // お客様が入力したタイトルと本文を取り出します
-        const { title, body } = req.body;
-        if (!title || !body) {
-            console.error("エラー: タイトルまたは本文が空です。");
+        // お客様が入力した情報を取り出します
+        const { type, title, body, url } = req.body;
+        
+        let articleTitle = title;
+        let articleBody = body;
+
+        // もしURLが指定されていたら、そのページの内容を取得します
+        if (type === 'url' && url) {
+            try {
+                const { data } = await axios.get(url);
+                const $ = cheerio.load(data);
+                articleTitle = $('h1').first().text();
+                // ゴルフサプリの記事本文が含まれていそうなセレクタを複数試す
+                articleBody = $('.post_content').text() || $('article').text() || $('.main_content').text() || $('body').text();
+                 if (articleBody.length > 5000) { // 長すぎる場合は主要部分だけを切り出す
+                    articleBody = articleBody.substring(0, 5000) + "... (本文省略)";
+                }
+            } catch (scrapeError) {
+                console.error('URLの取得エラー:', scrapeError);
+                return res.status(500).json({ error: '指定されたURLから記事内容を取得できませんでした。' });
+            }
+        }
+        
+        if (!articleTitle || !articleBody) {
             return res.status(400).json({ error: 'タイトルと本文の両方が必要です。' });
         }
-        console.log("★★ STEP 4: お客様からの依頼を受け取りました。これからAIに指示を出します。 ★★");
 
         // AIに渡す、最強の指示書（プロンプト）です
         const prompt = `
@@ -56,9 +75,9 @@ export default async function handler(req, res) {
 
 入力された記事は以下の通りです。
 ---
-[タイトル]: ${title}
+[タイトル]: ${articleTitle}
 ---
-[本文]: ${body}
+[本文]: ${articleBody}
 ---
 
 出力は、以下の厳格なJSON形式のみで行ってください。他のテキストは一切含めないでください。
@@ -94,12 +113,11 @@ export default async function handler(req, res) {
   ]
 }
 `;
+        
         // AIに指示書を渡して、返事を待ちます
         const result = await model.generateContent(prompt);
         const response = result.response;
         
-        console.log("★★ STEP 5: AIから無事に返事がありました。お客様に結果をお届けします。 ★★");
-
         // AIからの返事を、お客様の画面に送れる形に整えます
         const responseData = JSON.parse(response.text());
         

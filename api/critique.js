@@ -242,7 +242,16 @@ export default async function handler(req, res) {
       return res.status(400).json({ ok: false, error: "mode は 'text' または 'url' を指定してください。" });
     }
 
-    const apiKey = process.env.GEMINI_API_KEY;
+    // 余分な空白・改行を除去してから使う
+const apiKey = (process.env.GEMINI_API_KEY || "").trim();
+
+if (!apiKey) return res.status(500).json({ ok: false, error: "GEMINI_API_KEY が設定されていません。" });
+
+// デバッグ：キーが読めているか、安全に確認（末尾4桁のみ）
+try {
+  console.log("[COMPASS] Using GEMINI_API_KEY ****" + apiKey.slice(-4));
+} catch {}
+
     if (!apiKey) return res.status(500).json({ ok: false, error: "GEMINI_API_KEY が設定されていません。" });
 
     // このキーで使えるモデル一覧 → generateContent対応の最適を自動選択（フル名 "models/xxx" で取得）
@@ -280,3 +289,4 @@ export default async function handler(req, res) {
     return res.status(500).json({ ok: false, error: message });
   }
 }
+

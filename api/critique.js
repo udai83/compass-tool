@@ -1,14 +1,14 @@
 // api/critique.js
-// Vercel Serverless Function (Node.js) - ESM
-// - mode=text:  タイトル＋本文をGeminiで添削
-// - mode=url :  axios+cheerioでh1/本文を抽出してGeminiで添削
-// Gemini APIキーは Vercel 環境変数 GEMINI_API_KEY から取得
+// Vercel Serverless Function (Node.js/ESM)
+// - mode=text:  タイトル＋本文を評価
+// - mode=url :  axios+cheerioで抽出したh1/本文を評価
+// Google Gemini (Generative Language API) を REST で直接呼び出す。
+// APIキーは Vercel 環境変数 GEMINI_API_KEY を使用。
 
 import axios from "axios";
 import * as cheerio from "cheerio";
-import { GoogleGenerativeAI } from "@google/generative-ai";
 
-// ---------- Helpers ----------
+// ---------------- Utilities ----------------
 function readJsonBody(req) {
   return new Promise((resolve, reject) => {
     let data = "";
@@ -32,12 +32,9 @@ function sanitizeText(s, max = 8000) {
 
 function extractArticle(html) {
   const $ = cheerio.load(html);
-
-  // 先にノイズっぽい領域を除去（簡易）
   ["header", "nav", "footer", "aside", ".sidebar", ".ads", ".advertisement"].forEach((sel) =>
     $(sel).remove()
   );
-
   const title =
     $("h1").first().text().trim() ||
     $("meta[property='og:title']").attr("content") ||
@@ -57,7 +54,6 @@ function extractArticle(html) {
     });
     body = parts.join("\n\n");
   }
-
   return { title: title || "", body: (body || "").trim() };
 }
 
@@ -137,58 +133,70 @@ function extractJsonFromText(text) {
   return JSON.parse(match[0]);
 }
 
-function isModelNotFoundOrUnsupported(err) {
-  const msg = String(err?.message || "");
-  return (
-    msg.includes("404") ||
-    msg.toLowerCase().includes("not found") ||
-    msg.toLowerCase().includes("is not supported for generatecontent")
-  );
+// ---------------- Gemini REST ----------------
+// 1) ListModels で、このAPIキーが使えるモデルを取得
+async function listModels(apiKey) {
+  const url = `https://generativelanguage.googleapis.com/v1beta/models?key=${encodeURIComponent(
+    apiKey
+  )}`;
+  const resp = await axios.get(url, { timeout: 15000 });
+  return resp.data?.models || [];
 }
 
-// 指定した順にモデルを試す（環境差異/版差異に対応）
-async function generateWithFallback(genAI, prompt) {
-  const candidateModels = [
+// 2) generateContent をサポートするモデルの中から優先順で選択
+function pickBestModel(models) {
+  // supportedGenerationMethods に "generateContent" を含むものだけ
+  const usable = models.filter((m) =>
+    (m.supportedGenerationMethods || []).includes("generateContent")
+  );
+
+  // 優先順。存在する最初のものを使う
+  const preferred = [
     "gemini-1.5-pro-002",
     "gemini-1.5-pro",
     "gemini-1.5-flash-002",
     "gemini-1.5-flash",
-    "gemini-1.0-pro"
+    "gemini-1.0-pro",
+    "gemini-pro"
   ];
 
-  const tried = [];
-  let lastError;
-
-  for (const m of candidateModels) {
-    try {
-      const model = genAI.getGenerativeModel({ model: m });
-      const resp = await model.generateContent({
-        contents: [{ role: "user", parts: [{ text: prompt }] }],
-        generationConfig: {
-          temperature: 0.4,
-          maxOutputTokens: 1024
-        }
-      });
-      const out = resp?.response?.text?.() ?? resp?.response?.candidates?.[0]?.content?.parts?.[0]?.text ?? "";
-      if (!out) throw new Error("AIの応答が空でした。");
-      return { text: out, model: m };
-    } catch (err) {
-      tried.push(m);
-      lastError = err;
-      if (!isModelNotFoundOrUnsupported(err)) {
-        // 404/未対応以外は即座に打ち切り（APIキー不正・レート等）
-        throw new Error(`${err.message || err}`);
-      }
-      // 404/未対応 → 次の候補へ
-    }
+  for (const name of preferred) {
+    const found = usable.find((m) => m.name === name || m.name?.endsWith(`/models/${name}`));
+    if (found) return found.name.includes("/models/") ? found.name.split("/models/")[1] : found.name;
   }
 
-  throw new Error(
-    `利用可能なモデルが見つかりませんでした。試行モデル: ${tried.join(", ")} / 最後のエラー: ${lastError?.message || lastError}`
-  );
+  // 何もマッチしなければ、usableの先頭を返す（最後の保険）
+  if (usable.length > 0) {
+    const n = usable[0].name;
+    return n.includes("/models/") ? n.split("/models/")[1] : n;
+  }
+
+  return null;
 }
 
-// ---------- Main Handler ----------
+// 3) 選択したモデルで generateContent 実行（REST）
+async function generateContentREST(apiKey, model, prompt) {
+  const url = `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(
+    model
+  )}:generateContent?key=${encodeURIComponent(apiKey)}`;
+  const payload = {
+    contents: [{ role: "user", parts: [{ text: prompt }] }],
+    generationConfig: {
+      temperature: 0.4,
+      maxOutputTokens: 1024
+    }
+  };
+  const resp = await axios.post(url, payload, { timeout: 30000 });
+  // レスポンスからテキスト抽出
+  const txt =
+    resp.data?.candidates?.[0]?.content?.parts
+      ?.map((p) => p.text || "")
+      .join("") || "";
+  if (!txt) throw new Error("AIの応答が空でした。");
+  return txt;
+}
+
+// ---------------- Main Handler ----------------
 export default async function handler(req, res) {
   // CORS
   res.setHeader("Access-Control-Allow-Origin", "*");
@@ -211,7 +219,6 @@ export default async function handler(req, res) {
       if (!/^https?:\/\//i.test(targetUrl)) {
         return res.status(400).json({ ok: false, error: "URLが不正です。" });
       }
-
       const htmlResp = await axios.get(targetUrl, {
         timeout: 20000,
         headers: {
@@ -220,7 +227,6 @@ export default async function handler(req, res) {
           Accept: "text/html,application/xhtml+xml"
         }
       });
-
       const { title: t, body: b } = extractArticle(htmlResp.data);
       title = sanitizeText(t || "");
       content = sanitizeText(b || "");
@@ -239,19 +245,25 @@ export default async function handler(req, res) {
       return res.status(400).json({ ok: false, error: "mode は 'text' または 'url' を指定してください。" });
     }
 
-    // Gemini
     const apiKey = process.env.GEMINI_API_KEY;
     if (!apiKey) return res.status(500).json({ ok: false, error: "GEMINI_API_KEY が設定されていません。" });
 
-    const genAI = new GoogleGenerativeAI(apiKey);
+    // まず、このキーで使えるモデル一覧を取得し、generateContent対応モデルを自動選択
+    const models = await listModels(apiKey);
+    const chosen = pickBestModel(models);
+    if (!chosen) {
+      return res.status(500).json({
+        ok: false,
+        error:
+          "このAPIキーで利用可能な generateContent 対応モデルが見つかりませんでした。AI Studioのキーか、Generative Language APIが有効化されたGoogle CloudのAPIキーを使用してください。"
+      });
+    }
+
     const prompt = buildPrompt({ title, body: content });
-
-    // ★ モデル自動フォールバック
-    const { text } = await generateWithFallback(genAI, prompt);
-
+    const text = await generateContentREST(apiKey, chosen, prompt);
     const critique = extractJsonFromText(text);
 
-    // 形式の軽い整形
+    // 軽い整形
     try {
       if (critique?.title_feedback) {
         critique.title_feedback.score = parseInt(critique.title_feedback.score, 10);
@@ -261,13 +273,13 @@ export default async function handler(req, res) {
       if (isNaN(critique.overall_score)) critique.overall_score = null;
     } catch {}
 
-    return res.status(200).json({ ok: true, critique, source: sourceMeta });
+    return res.status(200).json({ ok: true, critique, source: sourceMeta, used_model: chosen });
   } catch (err) {
-    console.error("[COMPASS] Error:", err);
+    console.error("[COMPASS] Error:", err?.response?.data || err);
     const message =
-      err?.response?.status
-        ? `外部サイト取得エラー (${err.response.status})`
-        : err?.message || "不明なエラー";
+      err?.response?.data?.error?.message ||
+      (err?.response?.status ? `外部サイト取得エラー (${err.response.status})` : err?.message) ||
+      "不明なエラー";
     return res.status(500).json({ ok: false, error: message });
   }
 }

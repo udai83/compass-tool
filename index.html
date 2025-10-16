@@ -1,112 +1,286 @@
 <!DOCTYPE html>
 <html lang="ja">
 <head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>AI添削ツール「COMPASS」</title>
-    <script src="https://cdn.tailwindcss.com"></script>
-    <style>
-        body { font-family: 'Inter', 'Noto Sans JP', sans-serif; }
-        .feedback-tag { display: inline-block; background-color: #e0f2fe; color: #0c4a6e; padding: 2px 8px; border-radius: 9999px; font-size: 0.875rem; margin-right: 8px; }
-        .feedback-item { padding: 1rem; border: 1px solid #e5e7eb; border-radius: 0.75rem; background-color: #f9fafb; }
-        #loading-overlay { position: fixed; top: 0; left: 0; width: 100%; height: 100%; background-color: rgba(0, 0, 0, 0.6); display: flex; justify-content: center; align-items: center; z-index: 9999; }
-        .loader { border: 8px solid #f3f3f3; border-top: 8px solid #3b82f6; border-radius: 50%; width: 60px; height: 60px; animation: spin 1.5s linear infinite; }
-        @keyframes spin { 0% { transform: rotate(0deg); } 100% { transform: rotate(360deg); } }
-    </style>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>COMPASS｜AIコンテンツ添削ツール</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <link rel="icon" href="data:," />
+  <style>
+    /* Hide number input arrows (just in case) */
+    input::-webkit-outer-spin-button, input::-webkit-inner-spin-button { -webkit-appearance: none; margin: 0; }
+    input[type=number] { -moz-appearance: textfield; }
+  </style>
 </head>
-<body class="bg-gray-100 text-gray-800">
+<body class="min-h-screen bg-slate-50 text-slate-800">
+  <!-- App Shell -->
+  <div id="app" class="max-w-5xl mx-auto px-4 py-10">
 
-    <div id="loading-overlay" class="hidden"><div class="loader"></div></div>
+    <!-- Header -->
+    <header class="mb-8">
+      <h1 class="text-3xl font-extrabold tracking-tight text-slate-900">COMPASS</h1>
+      <p class="text-slate-500">LLMO時代のためのAIコンテンツ添削ツール</p>
+    </header>
 
-    <div id="app-screen" class="min-h-screen p-4 sm:p-6 md:p-8">
-        <div class="max-w-4xl mx-auto bg-white rounded-2xl shadow-lg p-6 sm:p-8">
-            <header class="mb-8 text-center">
-                <h1 class="text-3xl sm:text-4xl font-bold text-gray-800">AI添削ツール「COMPASS」</h1>
-                <p class="text-gray-500 mt-2">LLMO時代に最適化されたコンテンツ品質向上をサポートします。</p>
-            </header>
-            
-            <div>
-                <div class="space-y-4">
-                    <div>
-                        <label for="title-input" class="block text-sm font-medium text-gray-700 mb-1">タイトル</label>
-                        <input type="text" id="title-input" class="w-full p-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500" placeholder="記事のタイトルを入力">
-                    </div>
-                    <div>
-                        <label for="body-input" class="block text-sm font-medium text-gray-700 mb-1">本文</label>
-                        <textarea id="body-input" rows="12" class="w-full p-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500" placeholder="記事の本文を貼り付け"></textarea>
-                    </div>
-                </div>
-            </div>
+    <!-- Login Card -->
+    <section id="login-view" class="w-full">
+      <div class="bg-white shadow-xl shadow-slate-200/40 rounded-2xl p-6 border border-slate-200 max-w-md">
+        <h2 class="text-xl font-semibold mb-2">ログイン</h2>
+        <p class="text-sm text-slate-500 mb-6">デモ用のIDとパスワードを入力してください。</p>
 
-            <div class="mt-8 text-center">
-                <button id="critique-button" class="w-full sm:w-auto bg-blue-600 text-white font-bold py-3 px-12 rounded-lg hover:bg-blue-700 transition-colors text-lg shadow-md">
-                    添削を開始する
-                </button>
-            </div>
+        <form id="login-form" class="space-y-4">
+          <div>
+            <label class="block text-sm font-medium text-slate-700 mb-1">ユーザーID</label>
+            <input id="login-id" type="text" class="w-full rounded-xl border-slate-300 focus:border-indigo-500 focus:ring-indigo-500" placeholder="golfsapuri" required />
+          </div>
+          <div>
+            <label class="block text-sm font-medium text-slate-700 mb-1">パスワード</label>
+            <input id="login-pass" type="password" class="w-full rounded-xl border-slate-300 focus:border-indigo-500 focus:ring-indigo-500" placeholder="compass2025" required />
+          </div>
+          <button type="submit" class="w-full inline-flex items-center justify-center gap-2 rounded-xl bg-indigo-600 text-white font-semibold py-2.5 hover:bg-indigo-700 transition">
+            入室する
+          </button>
+          <p id="login-error" class="hidden text-sm text-rose-600 mt-2">IDまたはパスワードが正しくありません。</p>
+        </form>
+      </div>
+    </section>
 
-            <div id="result-area" class="mt-10 hidden">
-                <h2 class="text-2xl font-bold mb-6 border-l-4 border-blue-600 pl-4">フィードバック結果</h2>
-                <div id="feedback-container" class="space-y-6"></div>
-            </div>
+    <!-- Main Tool (hidden until login) -->
+    <section id="tool-view" class="hidden w-full">
+      <!-- Tabs -->
+      <div class="bg-white border border-slate-200 rounded-2xl p-2 flex items-center gap-2 mb-6 shadow-sm">
+        <button id="tab-new" class="tab-btn flex-1 py-2.5 rounded-xl text-sm font-semibold bg-indigo-600 text-white">新規記事</button>
+        <button id="tab-url" class="tab-btn flex-1 py-2.5 rounded-xl text-sm font-semibold text-slate-700 hover:bg-slate-100">既存記事URL</button>
+      </div>
+
+      <!-- Panels -->
+      <div id="panel-new" class="space-y-4">
+        <div>
+          <label class="block text-sm font-medium text-slate-700 mb-1">タイトル</label>
+          <input id="new-title" type="text" class="w-full rounded-xl border-slate-300 focus:border-indigo-500 focus:ring-indigo-500" placeholder="例）100切り最短ルート：忙しい社会人のための週2練習メニュー" />
         </div>
+        <div>
+          <label class="block text-sm font-medium text-slate-700 mb-1">本文</label>
+          <textarea id="new-body" rows="12" class="w-full rounded-xl border-slate-300 focus:border-indigo-500 focus:ring-indigo-500" placeholder="本文を貼り付けてください"></textarea>
+        </div>
+      </div>
+
+      <div id="panel-url" class="hidden space-y-4">
+        <div>
+          <label class="block text-sm font-medium text-slate-700 mb-1">URL</label>
+          <input id="target-url" type="url" class="w-full rounded-xl border-slate-300 focus:border-indigo-500 focus:ring-indigo-500" placeholder="https://example.com/article" />
+          <p class="text-xs text-slate-500 mt-1">指定URLの&lt;h1&gt;と本文を自動抽出して添削します。</p>
+        </div>
+      </div>
+
+      <!-- Action -->
+      <div class="mt-6 flex items-center gap-3">
+        <button id="run-btn" class="inline-flex items-center gap-2 rounded-xl bg-indigo-600 text-white font-semibold px-5 py-3 hover:bg-indigo-700 transition">
+          添削を開始する
+        </button>
+        <span id="run-hint" class="text-sm text-slate-500">※ 入力後にクリック</span>
+      </div>
+
+      <!-- Result -->
+      <div id="result-wrap" class="mt-8 hidden">
+        <div class="bg-white border border-slate-200 rounded-2xl p-6 shadow-sm">
+          <div class="flex items-start justify-between gap-4">
+            <h3 class="text-xl font-bold">添削結果</h3>
+            <button id="copy-json" class="text-sm px-3 py-1.5 rounded-lg border border-slate-300 hover:bg-slate-50">JSONをコピー</button>
+          </div>
+
+          <div id="meta-source" class="text-xs text-slate-500 mt-2"></div>
+
+          <div class="mt-6 grid md:grid-cols-2 gap-6">
+            <div class="p-4 rounded-xl border border-slate-200">
+              <div class="text-sm font-semibold text-slate-600">タイトル評価</div>
+              <div class="mt-2 text-3xl font-extrabold"><span id="title-score">-</span>/10</div>
+              <p id="title-comment" class="mt-2 text-slate-700"></p>
+            </div>
+            <div class="p-4 rounded-xl border border-slate-200">
+              <div class="text-sm font-semibold text-slate-600">総合評価</div>
+              <div class="mt-2 text-3xl font-extrabold"><span id="overall-score">-</span>/10</div>
+              <p id="overall-comment" class="mt-2 text-slate-700"></p>
+            </div>
+          </div>
+
+          <div class="mt-6">
+            <h4 class="font-semibold text-slate-800">改善ポイント</h4>
+            <div id="points" class="mt-3 grid gap-3"></div>
+          </div>
+        </div>
+      </div>
+    </section>
+  </div>
+
+  <!-- Loading Overlay -->
+  <div id="loading-overlay" class="hidden fixed inset-0 bg-slate-900/60 backdrop-blur-sm z-50">
+    <div class="absolute inset-0 flex items-center justify-center">
+      <div class="flex flex-col items-center gap-4">
+        <div class="h-12 w-12 rounded-full border-4 border-white/30 border-t-white animate-spin"></div>
+        <p class="text-white font-semibold">添削中… 少々お待ちください</p>
+      </div>
     </div>
+  </div>
 
-    <script>
-        const critiqueButton = document.getElementById('critique-button');
-        const loadingOverlay = document.getElementById('loading-overlay');
-        const resultArea = document.getElementById('result-area');
-        const feedbackContainer = document.getElementById('feedback-container');
+  <script>
+    // ---------- State ----------
+    const loginView = document.getElementById('login-view');
+    const toolView  = document.getElementById('tool-view');
+    const loginForm = document.getElementById('login-form');
+    const loginError= document.getElementById('login-error');
+    const ID = 'golfsapuri';
+    const PASS = 'compass2025';
 
-        critiqueButton.addEventListener('click', async () => {
-            const title = document.getElementById('title-input').value.trim();
-            const body = document.getElementById('body-input').value.trim();
+    const tabNew = document.getElementById('tab-new');
+    const tabUrl = document.getElementById('tab-url');
+    const panelNew = document.getElementById('panel-new');
+    const panelUrl = document.getElementById('panel-url');
 
-            if (!title || !body) {
-                alert('タイトルと本文の両方を入力してください。');
-                return;
-            }
+    const runBtn = document.getElementById('run-btn');
+    const overlay = document.getElementById('loading-overlay');
 
-            loadingOverlay.classList.remove('hidden');
-            resultArea.classList.add('hidden');
+    const resultWrap = document.getElementById('result-wrap');
+    const metaSource = document.getElementById('meta-source');
+    const titleScore = document.getElementById('title-score');
+    const titleComment = document.getElementById('title-comment');
+    const overallScore = document.getElementById('overall-score');
+    const overallComment = document.getElementById('overall-comment');
+    const pointsWrap = document.getElementById('points');
+    const copyJsonBtn = document.getElementById('copy-json');
 
-            try {
-                // ここが重要：発電所(/api/critique)を呼び出します
-                const response = await fetch('/api/critique', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ title, body })
-                });
+    // ---------- Login ----------
+    loginForm.addEventListener('submit', (e) => {
+      e.preventDefault();
+      const id = document.getElementById('login-id').value.trim();
+      const pw = document.getElementById('login-pass').value.trim();
+      if (id === ID && pw === PASS) {
+        loginError.classList.add('hidden');
+        loginView.classList.add('hidden');
+        toolView.classList.remove('hidden');
+      } else {
+        loginError.classList.remove('hidden');
+      }
+    });
 
-                if (!response.ok) {
-                    const errorData = await response.json();
-                    throw new Error(errorData.error || `API error: ${response.statusText}`);
-                }
+    // ---------- Tabs ----------
+    function activate(tab) {
+      if (tab === 'new') {
+        tabNew.classList.add('bg-indigo-600','text-white'); tabNew.classList.remove('text-slate-700','hover:bg-slate-100');
+        tabUrl.classList.remove('bg-indigo-600','text-white'); tabUrl.classList.add('text-slate-700','hover:bg-slate-100');
+        panelNew.classList.remove('hidden'); panelUrl.classList.add('hidden');
+      } else {
+        tabUrl.classList.add('bg-indigo-600','text-white'); tabUrl.classList.remove('text-slate-700','hover:bg-slate-100');
+        tabNew.classList.remove('bg-indigo-600','text-white'); tabNew.classList.add('text-slate-700','hover:bg-slate-100');
+        panelUrl.classList.remove('hidden'); panelNew.classList.add('hidden');
+      }
+      resultWrap.classList.add('hidden');
+    }
+    tabNew.addEventListener('click', () => activate('new'));
+    tabUrl.addEventListener('click', () => activate('url'));
 
-                const data = await response.json();
-                displayFeedback(data);
+    // ---------- Run Critique ----------
+    async function runCritique() {
+      const isNew = !panelNew.classList.contains('hidden');
+      let payload = {};
+      if (isNew) {
+        const title = document.getElementById('new-title').value.trim();
+        const body  = document.getElementById('new-body').value.trim();
+        if (!title || !body) {
+          alert('「タイトル」と「本文」を入力してください。');
+          return;
+        }
+        payload = { mode: 'text', title, body };
+      } else {
+        const url = document.getElementById('target-url').value.trim();
+        if (!url) {
+          alert('URLを入力してください。');
+          return;
+        }
+        payload = { mode: 'url', url };
+      }
 
-            } catch (error) {
-                console.error('Fetch Error:', error);
-                alert(`エラーが発生しました：${error.message}`);
-            } finally {
-                loadingOverlay.classList.add('hidden');
-                resultArea.classList.remove('hidden');
-                window.scrollTo({ top: resultArea.offsetTop - 20, behavior: 'smooth' });
-            }
+      overlay.classList.remove('hidden');
+      runBtn.disabled = true;
+
+      try {
+        const resp = await fetch('/api/critique', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(payload),
         });
 
-        function displayFeedback(data) {
-            feedbackContainer.innerHTML = '';
-            const overallHtml = `<div class="feedback-item border-l-4 border-blue-500 bg-blue-50"><h3 class="text-lg font-bold mb-2 text-blue-800">総合評価: ${'★'.repeat(data.overall_score)}${'☆'.repeat(10 - data.overall_score)} (${data.overall_score}/10)</h3><p class="text-blue-700">${data.overall_comment}</p></div>`;
-            feedbackContainer.insertAdjacentHTML('beforeend', overallHtml);
-            const titleHtml = `<div class="feedback-item border-l-4 border-yellow-500 bg-yellow-50"><h3 class="text-lg font-bold mb-2 text-yellow-800">タイトル評価: ${'★'.repeat(data.title_feedback.score)}${'☆'.repeat(10 - data.title_feedback.score)} (${data.title_feedback.score}/10)</h3><p class="text-yellow-700">${data.title_feedback.comment}</p></div>`;
-            feedbackContainer.insertAdjacentHTML('beforeend', titleHtml);
-            data.feedback_points.forEach(item => {
-                const itemHtml = `<div class="feedback-item"><h3 class="font-bold mb-2"><span class="feedback-tag">${item.point}</span></h3><p>${item.suggestion.replace(/\n/g, '<br>')}</p></div>`;
-                feedbackContainer.insertAdjacentHTML('beforeend', itemHtml);
-            });
+        if (!resp.ok) {
+          const errText = await resp.text();
+          throw new Error(errText || 'サーバーエラーが発生しました');
         }
-    </script>
+
+        const data = await resp.json();
+        // data: { ok, critique, source }
+        if (!data.ok) throw new Error(data.error || '解析に失敗しました。');
+
+        // Fill UI
+        const c = data.critique;
+        titleScore.textContent = c?.title_feedback?.score ?? '-';
+        titleComment.textContent = c?.title_feedback?.comment ?? '';
+        overallScore.textContent = c?.overall_score ?? '-';
+        overallComment.textContent = c?.overall_comment ?? '';
+
+        // Points
+        pointsWrap.innerHTML = '';
+        (c?.feedback_points ?? []).forEach((p) => {
+          const card = document.createElement('div');
+          card.className = 'border border-slate-200 rounded-xl p-4';
+          card.innerHTML = `
+            <div class="text-sm font-semibold text-slate-700">${escapeHtml(p.point || '')}</div>
+            <p class="mt-1 text-slate-700 whitespace-pre-wrap">${escapeHtml(p.suggestion || '')}</p>
+          `;
+          pointsWrap.appendChild(card);
+        });
+
+        // Meta
+        if (data.source?.mode === 'url') {
+          metaSource.textContent = `解析対象URL: ${data.source.url}（抽出タイトル: ${data.source.title || 'N/A'}）`;
+        } else {
+          metaSource.textContent = '解析対象: 入力テキスト';
+        }
+
+        // Store last JSON for copy
+        window.__lastCritiqueJSON = JSON.stringify(c, null, 2);
+
+        resultWrap.classList.remove('hidden');
+        window.scrollTo({ top: document.body.scrollHeight, behavior: 'smooth' });
+      } catch (err) {
+        console.error(err);
+        alert('失敗しました: ' + (err.message || err));
+      } finally {
+        overlay.classList.add('hidden');
+        runBtn.disabled = false;
+      }
+    }
+
+    runBtn.addEventListener('click', runCritique);
+
+    // ---------- Utilities ----------
+    function escapeHtml(str) {
+      return String(str)
+        .replaceAll('&','&amp;')
+        .replaceAll('<','&lt;')
+        .replaceAll('>','&gt;')
+        .replaceAll('"','&quot;')
+        .replaceAll("'",'&#39;');
+    }
+
+    copyJsonBtn.addEventListener('click', async () => {
+      const text = window.__lastCritiqueJSON || '{}';
+      try {
+        await navigator.clipboard.writeText(text);
+        copyJsonBtn.textContent = 'コピーしました';
+        setTimeout(() => (copyJsonBtn.textContent = 'JSONをコピー'), 1500);
+      } catch {
+        alert('コピーに失敗しました');
+      }
+    });
+  </script>
 </body>
 </html>
-

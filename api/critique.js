@@ -1,22 +1,22 @@
 // api/critique.js
 // Vercel Serverless Function (Node.js) - ESM
-// Handles two modes: text critique and URL critique (axios + cheerio)
-// Uses Google Gemini via @google/generative-ai. API key from GEMINI_API_KEY.
+// - mode=text:  タイトル＋本文をGeminiで添削
+// - mode=url :  axios+cheerioでh1/本文を抽出してGeminiで添削
+// Gemini APIキーは Vercel 環境変数 GEMINI_API_KEY から取得
 
 import axios from "axios";
 import * as cheerio from "cheerio";
 import { GoogleGenerativeAI } from "@google/generative-ai";
 
-// ---- Helpers ----
+// ---------- Helpers ----------
 function readJsonBody(req) {
   return new Promise((resolve, reject) => {
     let data = "";
     req.on("data", (chunk) => (data += chunk));
     req.on("end", () => {
       try {
-        const parsed = data ? JSON.parse(data) : {};
-        resolve(parsed);
-      } catch (e) {
+        resolve(data ? JSON.parse(data) : {});
+      } catch {
         reject(new Error("Invalid JSON body"));
       }
     });
@@ -30,13 +30,20 @@ function sanitizeText(s, max = 8000) {
   return t.length > max ? t.slice(0, max) + "\n…(省略)" : t;
 }
 
-function extractArticle(html, url) {
+function extractArticle(html) {
   const $ = cheerio.load(html);
 
-  // Title by H1
-  const title = ($("h1").first().text() || $("title").first().text() || "").trim();
+  // 先にノイズっぽい領域を除去（簡易）
+  ["header", "nav", "footer", "aside", ".sidebar", ".ads", ".advertisement"].forEach((sel) =>
+    $(sel).remove()
+  );
 
-  // Prefer <article>, then <main>, else paragraph fallback
+  const title =
+    $("h1").first().text().trim() ||
+    $("meta[property='og:title']").attr("content") ||
+    $("title").first().text().trim() ||
+    "";
+
   let body = "";
   if ($("article").length) {
     body = $("article").first().text();
@@ -51,18 +58,10 @@ function extractArticle(html, url) {
     body = parts.join("\n\n");
   }
 
-  // Remove nav/footer/aside obvious noise if present
-  const noiseSelectors = ["header", "nav", "footer", "aside", ".sidebar", ".ads", ".advertisement"];
-  noiseSelectors.forEach((sel) => $(sel).remove());
-
-  return {
-    title: title || "",
-    body: body ? body.trim() : "",
-  };
+  return { title: title || "", body: (body || "").trim() };
 }
 
 function buildPrompt({ title, body }) {
-  // Inject the provided strict instruction (Japanese) into Gemini
   return `
 あなたは、「ゴルフサプリ」の伝説的な編集長です。あなたの仕事は、ライターが執筆した記事を、LLMO（AI検索）時代に最も評価される最高のコンテンツに磨き上げることです。
 
@@ -133,30 +132,71 @@ ${body || "(未入力)"}
 }
 
 function extractJsonFromText(text) {
-  // Sometimes models wrap JSON in code fences. Extract the first JSON object.
   const match = text.match(/\{[\s\S]*\}$/m) || text.match(/\{[\s\S]*\}/m);
   if (!match) throw new Error("AIの応答からJSONを抽出できませんでした。");
-  const raw = match[0];
-  const parsed = JSON.parse(raw);
-  return parsed;
+  return JSON.parse(match[0]);
 }
 
-// ---- Main Handler ----
+function isModelNotFoundOrUnsupported(err) {
+  const msg = String(err?.message || "");
+  return (
+    msg.includes("404") ||
+    msg.toLowerCase().includes("not found") ||
+    msg.toLowerCase().includes("is not supported for generatecontent")
+  );
+}
+
+// 指定した順にモデルを試す（環境差異/版差異に対応）
+async function generateWithFallback(genAI, prompt) {
+  const candidateModels = [
+    "gemini-1.5-pro-002",
+    "gemini-1.5-pro",
+    "gemini-1.5-flash-002",
+    "gemini-1.5-flash",
+    "gemini-1.0-pro"
+  ];
+
+  const tried = [];
+  let lastError;
+
+  for (const m of candidateModels) {
+    try {
+      const model = genAI.getGenerativeModel({ model: m });
+      const resp = await model.generateContent({
+        contents: [{ role: "user", parts: [{ text: prompt }] }],
+        generationConfig: {
+          temperature: 0.4,
+          maxOutputTokens: 1024
+        }
+      });
+      const out = resp?.response?.text?.() ?? resp?.response?.candidates?.[0]?.content?.parts?.[0]?.text ?? "";
+      if (!out) throw new Error("AIの応答が空でした。");
+      return { text: out, model: m };
+    } catch (err) {
+      tried.push(m);
+      lastError = err;
+      if (!isModelNotFoundOrUnsupported(err)) {
+        // 404/未対応以外は即座に打ち切り（APIキー不正・レート等）
+        throw new Error(`${err.message || err}`);
+      }
+      // 404/未対応 → 次の候補へ
+    }
+  }
+
+  throw new Error(
+    `利用可能なモデルが見つかりませんでした。試行モデル: ${tried.join(", ")} / 最後のエラー: ${lastError?.message || lastError}`
+  );
+}
+
+// ---------- Main Handler ----------
 export default async function handler(req, res) {
-  // CORS (allow same origin; simple permissive for preview)
+  // CORS
   res.setHeader("Access-Control-Allow-Origin", "*");
   res.setHeader("Access-Control-Allow-Methods", "POST, OPTIONS");
   res.setHeader("Access-Control-Allow-Headers", "Content-Type");
 
-  if (req.method === "OPTIONS") {
-    res.status(204).end();
-    return;
-  }
-
-  if (req.method !== "POST") {
-    res.status(405).json({ ok: false, error: "Method Not Allowed" });
-    return;
-  }
+  if (req.method === "OPTIONS") return res.status(204).end();
+  if (req.method !== "POST") return res.status(405).json({ ok: false, error: "Method Not Allowed" });
 
   try {
     const body = await readJsonBody(req);
@@ -171,17 +211,17 @@ export default async function handler(req, res) {
       if (!/^https?:\/\//i.test(targetUrl)) {
         return res.status(400).json({ ok: false, error: "URLが不正です。" });
       }
-      // Fetch and parse
+
       const htmlResp = await axios.get(targetUrl, {
         timeout: 20000,
         headers: {
           "User-Agent":
             "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120 Safari/537.36 COMPASS/1.0",
-          Accept: "text/html,application/xhtml+xml",
-        },
+          Accept: "text/html,application/xhtml+xml"
+        }
       });
 
-      const { title: t, body: b } = extractArticle(htmlResp.data, targetUrl);
+      const { title: t, body: b } = extractArticle(htmlResp.data);
       title = sanitizeText(t || "");
       content = sanitizeText(b || "");
       sourceMeta = { mode: "url", url: targetUrl, title };
@@ -201,30 +241,17 @@ export default async function handler(req, res) {
 
     // Gemini
     const apiKey = process.env.GEMINI_API_KEY;
-    if (!apiKey) {
-      return res.status(500).json({ ok: false, error: "GEMINI_API_KEY が設定されていません。" });
-    }
+    if (!apiKey) return res.status(500).json({ ok: false, error: "GEMINI_API_KEY が設定されていません。" });
+
     const genAI = new GoogleGenerativeAI(apiKey);
-
-    // ✅ 修正版：最新の正しいモデル指定
-    const model = genAI.getGenerativeModel({ model: "gemini-1.5-pro-latest" });
-
     const prompt = buildPrompt({ title, body: content });
 
-    const response = await model.generateContent({
-      contents: [{ role: "user", parts: [{ text: prompt }] }],
-      generationConfig: {
-        temperature: 0.4,
-        maxOutputTokens: 1024,
-      },
-    });
+    // ★ モデル自動フォールバック
+    const { text } = await generateWithFallback(genAI, prompt);
 
-    const text = response?.response?.text?.() ?? "";
-    if (!text) throw new Error("AIの応答が空でした。");
+    const critique = extractJsonFromText(text);
 
-    let critique = extractJsonFromText(text);
-
-    // Minimal schema validation / coercion
+    // 形式の軽い整形
     try {
       if (critique?.title_feedback) {
         critique.title_feedback.score = parseInt(critique.title_feedback.score, 10);
@@ -234,16 +261,13 @@ export default async function handler(req, res) {
       if (isNaN(critique.overall_score)) critique.overall_score = null;
     } catch {}
 
-    res.status(200).json({
-      ok: true,
-      critique,
-      source: sourceMeta,
-    });
+    return res.status(200).json({ ok: true, critique, source: sourceMeta });
   } catch (err) {
     console.error("[COMPASS] Error:", err);
-    const message = err?.response?.status
-      ? `外部サイト取得エラー (${err.response.status})`
-      : err?.message || "不明なエラー";
-    res.status(500).json({ ok: false, error: message });
+    const message =
+      err?.response?.status
+        ? `外部サイト取得エラー (${err.response.status})`
+        : err?.message || "不明なエラー";
+    return res.status(500).json({ ok: false, error: message });
   }
 }
